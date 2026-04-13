@@ -1,41 +1,41 @@
-enum barb_fitting {
-    //% block="LEFT"
-    JOYSTICK_BUTOON_LEFT_L = 2,
-    //% block="RIGHT" 
-    JOYSTICK_BUTOON_RIGHT_R = 1,
-    //% block="JOYSTICK BUTTON LEFT"
-    JOYSTICK_BUTTON_LEFT = 4,
-    //% block="JOYSTICK BUTTON RIGHT" 
-    JOYSTICK_BUTTON_RIGHT = 3,
+enum GamepadButton {
+    //% block="L"
+    BUTTON_L = 2,
+    //% block="R" 
+    BUTTON_R = 1,
+    //% block="left joystick button"
+    JOYSTICK_L = 4,
+    //% block="right joystick button" 
+    JOYSTICK_R = 3,
 }
 
-enum joystick_key_status {
-    //% block="DOWN"
-    JOYSTICK_PRESS_DOWN = 0,   //按下
-    //% block="UP"
-    JOYSTICK_PRESS_UP = 1,    //释放
-    //% block="CLICK1"
-    JOYSTICK_SINGLE_CLICK = 3,     //单击
-    //% block="CLICK2"
-    JOYSTICK_DOUBLE_CLICK = 4,    //双击
-    //% block="HOLD"
-    JOYSTICK_LONG_PRESS_HOLD = 6,    //长按
-    //% block="PRESS"
-    JOYSTICK_NONE_PRESS = 8,      //未按
+enum ButtonState {
+    //% block="pressed"
+    PRESSED = 0,
+    //% block="released"
+    RELEASED = 1,
+    //% block="single click"
+    SINGLE_CLICK = 3,
+    //% block="double click"
+    DOUBLE_CLICK = 4,
+    //% block="held"
+    HELD = 6,
+    //% block="not pressed"
+    NOT_PRESSED = 8,
 }
 
-enum Shaft{
+enum JoystickAxis {
     //% block="X"
-    JOYSTICK_X_Shaft = 0,
+    X = 0,
     //% block="Y"
-    JOYSTICK_Y_Shaft = 1,
+    Y = 1,
 }
 
-enum Wiggly{
-    //% block="LEFT"
-    JOYSTICK_left_wi = 0,
-    //% block="RIGHT"
-    JOYSTICK_right_wi = 1,
+enum JoystickSide {
+    //% block="left"
+    LEFT = 0,
+    //% block="right"
+    RIGHT = 1,
 }
 
 
@@ -126,61 +126,143 @@ namespace joystick {
         return gm;  
     } 
 
-    let JOYSTICK_I2C_ADDR = 0x5A;
-    let JOYSTICK_LEFT_X_REG = 0x10;
-    let JOYSTICK_LEFT_Y_REG = 0x11;
-    let JOYSTICK_RIGHT_X_REG = 0x12;
-    let JOYSTICK_RIGHT_Y_REG = 0x13;
+    const GAMEPAD_I2C_ADDRESS = 0x5A;
+    const LEFT_JOYSTICK_X_REG = 0x10;
+    const LEFT_JOYSTICK_Y_REG = 0x11;
+    const RIGHT_JOYSTICK_X_REG = 0x12;
+    const RIGHT_JOYSTICK_Y_REG = 0x13;
 
+    const LEFT_BUTTON_REG = 0x22;
+    const RIGHT_BUTTON_REG = 0x23;
+    const RIGHT_JOYSTICK_BUTTON_REG = 0x21;
+    const LEFT_JOYSTICK_BUTTON_REG = 0x20;
 
-    let BUTOON_LEFT_REG = 0x22;
-    let BUTOON_RIGHT_REG = 0x23;
-    let JOYSTICK_BUTTON_RIGHT = 0x21;
-    let JOYSTICK_BUTTON_LEFT = 0x20;
-    let NONE_PRESS = 8;
+    const RIGHT_BUTTON_ID = 1;
+    const LEFT_BUTTON_ID = 2;
+    const RIGHT_JOYSTICK_BUTTON_ID = 3;
+    const LEFT_JOYSTICK_BUTTON_ID = 4;
+    const JOYSTICK_DEADZONE = 8;
 
-    function Get_Button_Status (button : number){
+    let joystickCentersInitialized = false;
+    let leftJoystickXCenter = 0;
+    let leftJoystickYCenter = 0;
+    let rightJoystickXCenter = 0;
+    let rightJoystickYCenter = 0;
+
+    function getButtonStatus(button: number) {
         switch(button) {
-            case 1: 
-                return i2cread(JOYSTICK_I2C_ADDR,BUTOON_RIGHT_REG);
-            case 2: 
-                return i2cread(JOYSTICK_I2C_ADDR, BUTOON_LEFT_REG);
-            case 3: 
-                return i2cread(JOYSTICK_I2C_ADDR,JOYSTICK_BUTTON_RIGHT);
-			case 4: 
-				return i2cread(JOYSTICK_I2C_ADDR,JOYSTICK_BUTTON_LEFT);
+            case RIGHT_BUTTON_ID:
+                return i2cread(GAMEPAD_I2C_ADDRESS, RIGHT_BUTTON_REG);
+            case LEFT_BUTTON_ID:
+                return i2cread(GAMEPAD_I2C_ADDRESS, LEFT_BUTTON_REG);
+            case RIGHT_JOYSTICK_BUTTON_ID:
+                return i2cread(GAMEPAD_I2C_ADDRESS, RIGHT_JOYSTICK_BUTTON_REG);
+			case LEFT_JOYSTICK_BUTTON_ID:
+				return i2cread(GAMEPAD_I2C_ADDRESS, LEFT_JOYSTICK_BUTTON_REG);
             default:
                 return 0xff;
         }
     }
 
+    function initializeJoystickCenters() {
+        if (joystickCentersInitialized) {
+            return;
+        }
+
+        leftJoystickXCenter = i2cread(GAMEPAD_I2C_ADDRESS, LEFT_JOYSTICK_X_REG);
+        leftJoystickYCenter = i2cread(GAMEPAD_I2C_ADDRESS, LEFT_JOYSTICK_Y_REG);
+        rightJoystickXCenter = i2cread(GAMEPAD_I2C_ADDRESS, RIGHT_JOYSTICK_X_REG);
+        rightJoystickYCenter = i2cread(GAMEPAD_I2C_ADDRESS, RIGHT_JOYSTICK_Y_REG);
+        joystickCentersInitialized = true;
+    }
+
+    function readRawJoystickPosition(side: JoystickSide, axis: JoystickAxis): number {
+        if (side == JoystickSide.LEFT) {
+            if (axis == JoystickAxis.X) {
+                return i2cread(GAMEPAD_I2C_ADDRESS, LEFT_JOYSTICK_X_REG);
+            }
+            return i2cread(GAMEPAD_I2C_ADDRESS, LEFT_JOYSTICK_Y_REG);
+        }
+
+        if (axis == JoystickAxis.X) {
+            return i2cread(GAMEPAD_I2C_ADDRESS, RIGHT_JOYSTICK_X_REG);
+        }
+        return i2cread(GAMEPAD_I2C_ADDRESS, RIGHT_JOYSTICK_Y_REG);
+    }
+
+    function getJoystickCenter(side: JoystickSide, axis: JoystickAxis): number {
+        if (side == JoystickSide.LEFT) {
+            if (axis == JoystickAxis.X) {
+                return leftJoystickXCenter;
+            }
+            return leftJoystickYCenter;
+        }
+
+        if (axis == JoystickAxis.X) {
+            return rightJoystickXCenter;
+        }
+        return rightJoystickYCenter;
+    }
+
+    function readJoystickPosition(side: JoystickSide, axis: JoystickAxis): number {
+        initializeJoystickCenters();
+
+        let delta = readRawJoystickPosition(side, axis) - getJoystickCenter(side, axis);
+        if (Math.abs(delta) <= JOYSTICK_DEADZONE) {
+            return 0;
+        }
+        return delta;
+    }
+
    /**
-    * 双摇杆手柄
+    * Dual-joystick gamepad
     */
-   //% blockId=Gamepad_Status block="Gamepad_Status %button whether %status state" group="双摇杆手柄"
+   //% blockId=buttonState block="button %button is %status" group="Dual-Joystick Gamepad"
    //% weight=74
-   //% subcategory="双摇杆手柄"
+   //% subcategory="Dual-Joystick Gamepad"
    //% inlineInputMode=inline
-   export function Gamepad_Status(button: barb_fitting , status: joystick_key_status): boolean{
-       if(Get_Button_Status(button) == status){
+   export function buttonState(button: GamepadButton, status: ButtonState): boolean{
+       if(getButtonStatus(button) == status){
            return true;
        }
        return false;
     }
 
+    /**
+    * Dual-joystick gamepad
+    */
+   //% blockId=lButtonState block="L button is %status" group="Dual-Joystick Gamepad"
+   //% weight=73
+   //% subcategory="Dual-Joystick Gamepad"
+   //% inlineInputMode=inline
+   export function lButtonState(status: ButtonState): boolean {
+       return getButtonStatus(LEFT_BUTTON_ID) == status;
+    }
 
     /**
-    * 双摇杆手柄
+    * Dual-joystick gamepad
     */
-   //% blockId=Gamepad_shock block="Gamepad_shock Start of %shock vibration "  group="双摇杆手柄"
-   //% shock.min=0 shock.max=255
-   //% weight=75
-   //% subcategory="双摇杆手柄"
+   //% blockId=rButtonState block="R button is %status" group="Dual-Joystick Gamepad"
+   //% weight=72
+   //% subcategory="Dual-Joystick Gamepad"
    //% inlineInputMode=inline
-    export function Gamepad_shock( shock: number): void {
-        let a = AnalogPin.P1;
-        pins.analogWritePin( a , pins.map(
-			shock,
+   export function rButtonState(status: ButtonState): boolean {
+       return getButtonStatus(RIGHT_BUTTON_ID) == status;
+    }
+
+
+    /**
+    * Dual-joystick gamepad
+    */
+   //% blockId=setVibration block="set vibration to %strength"  group="Dual-Joystick Gamepad"
+   //% strength.min=0 strength.max=255
+   //% weight=75
+   //% subcategory="Dual-Joystick Gamepad"
+   //% inlineInputMode=inline
+    export function setVibration(strength: number): void {
+        let vibrationPin = AnalogPin.P1;
+        pins.analogWritePin(vibrationPin, pins.map(
+			strength,
 			0,
 			255,
 			0,
@@ -189,28 +271,24 @@ namespace joystick {
     }
 
     /**
-    * 双摇杆手柄
+    * Dual-joystick gamepad
     */
-   //% blockId=Gamepad_Wiggly block="Gamepad_Wiggly gain %rock rocker %axial price" group="双摇杆手柄"
+   //% blockId=joystickPosition block="joystick %side %axis position" group="Dual-Joystick Gamepad"
    //% weight=76
-   //% subcategory="双摇杆手柄"
+   //% subcategory="Dual-Joystick Gamepad"
    //% inlineInputMode=inline
-   export function Gamepad_Wiggly(rock: Wiggly , axial: Shaft){
-       let val = 0;
-       if(rock == 0){
-           if(axial == 0){
-               val = i2cread(JOYSTICK_I2C_ADDR,JOYSTICK_LEFT_X_REG);
-           }else{
-               val = i2cread(JOYSTICK_I2C_ADDR,JOYSTICK_LEFT_Y_REG);
-           }
-       }else{
-           if(axial == 0){
-               val = i2cread(JOYSTICK_I2C_ADDR,JOYSTICK_RIGHT_X_REG);
-           }else{
-               val = i2cread(JOYSTICK_I2C_ADDR,JOYSTICK_RIGHT_Y_REG);
-           }
-       }
-       return val;
+   export function joystickPosition(side: JoystickSide, axis: JoystickAxis): number {
+       return readJoystickPosition(side, axis);
+   }
+
+    /**
+    * Dual-joystick gamepad
+    */
+   //% blockId=calibrateJoystickCenter block="calibrate joystick center" group="Dual-Joystick Gamepad"
+   //% weight=71
+   //% subcategory="Dual-Joystick Gamepad"
+   export function calibrateJoystickCenter(): void {
+       joystickCentersInitialized = false;
+       initializeJoystickCenters();
    }
 }
-
