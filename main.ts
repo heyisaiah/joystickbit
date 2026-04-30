@@ -49,6 +49,19 @@ enum JoystickPositionLimit {
     MAX = 1,
 }
 
+enum JoystickDirection {
+    //% block="any direction"
+    ANY = 0,
+    //% block="up"
+    UP = 1,
+    //% block="down"
+    DOWN = 2,
+    //% block="left"
+    LEFT = 3,
+    //% block="right"
+    RIGHT = 4,
+}
+
 /**
  * Haptic vibration patterns for short feedback cues.
  */
@@ -200,7 +213,8 @@ namespace joystick {
     const JOYSTICK_POSITION_MAX = 100;
     const GAMEPAD_BUTTON_EVENT_SOURCE = 3100;
     const GAMEPAD_BUTTON_COMBO_EVENT_SOURCE = 3102;
-    const JOYSTICK_MOVED_EVENT_SOURCE = 3101;
+    const JOYSTICK_TILTED_EVENT_SOURCE = 3101;
+    const JOYSTICK_TILTED_CONTINUOUS_EVENT_SOURCE = 3103;
     const VIBRATION_PIN = AnalogPin.P1;
     const BUTTON_CLICK_MAX_MS = 400;
     const BUTTON_DOUBLE_CLICK_MAX_MS = 500;
@@ -217,7 +231,7 @@ namespace joystick {
     let faceButtonLastClickAt = [0, 0, 0, 0, 0, 0, 0];
     let faceButtonHeldRaised = [false, false, false, false, false, false, false];
     let comboPressedStates = [false, false, false, false, false, false, false];
-    let joystickMovedStates = [false, false];
+    let joystickTiltedStates = [false, false, false, false, false, false, false, false, false, false];
     let defaultVibrationStrength = 255;
     let vibrationRunId = 0;
 
@@ -341,8 +355,24 @@ namespace joystick {
         return first * 10 + second;
     }
 
-    function isJoystickMoved(side: JoystickSide): boolean {
-        return readJoystickPosition(side, JoystickAxis.X) != 0 || readJoystickPosition(side, JoystickAxis.Y) != 0;
+    function getJoystickDirectionEventValue(side: JoystickSide, direction: JoystickDirection): number {
+        return side * 10 + direction;
+    }
+
+    function isJoystickTilted(side: JoystickSide, direction: JoystickDirection): boolean {
+        let x = readJoystickPosition(side, JoystickAxis.X);
+        let y = readJoystickPosition(side, JoystickAxis.Y);
+
+        if (direction == JoystickDirection.ANY) {
+            return x != 0 || y != 0;
+        } else if (direction == JoystickDirection.UP) {
+            return y < 0 && Math.abs(y) >= Math.abs(x);
+        } else if (direction == JoystickDirection.DOWN) {
+            return y > 0 && Math.abs(y) >= Math.abs(x);
+        } else if (direction == JoystickDirection.LEFT) {
+            return x < 0 && Math.abs(x) > Math.abs(y);
+        }
+        return x > 0 && Math.abs(x) > Math.abs(y);
     }
 
     function clamp(value: number, min: number, max: number): number {
@@ -531,11 +561,17 @@ namespace joystick {
                 }
 
                 for (let side = 0; side <= 1; side++) {
-                    let moved = isJoystickMoved(side);
-                    if (moved && !joystickMovedStates[side]) {
-                        control.raiseEvent(JOYSTICK_MOVED_EVENT_SOURCE, side + 1);
+                    for (let direction = 0; direction <= 4; direction++) {
+                        let eventValue = getJoystickDirectionEventValue(side, direction);
+                        let tilted = isJoystickTilted(side, direction);
+                        if (tilted && !joystickTiltedStates[eventValue]) {
+                            control.raiseEvent(JOYSTICK_TILTED_EVENT_SOURCE, eventValue);
+                        }
+                        if (tilted) {
+                            control.raiseEvent(JOYSTICK_TILTED_CONTINUOUS_EVENT_SOURCE, eventValue);
+                        }
+                        joystickTiltedStates[eventValue] = tilted;
                     }
-                    joystickMovedStates[side] = moved;
                 }
 
                 basic.pause(20);
@@ -597,15 +633,41 @@ namespace joystick {
     }
 
     /**
-    * Run code when the selected joystick moves away from center.
+    * Run code once when the selected joystick tilts from center toward a direction.
     * @param side joystick to watch
+    * @param direction direction to watch
     */
-   //% blockId=onJoystickMoved block="on %side joystick moved" group="Joystick"
+   //% blockId=onJoystickTilted block="on %side joystick tilted %direction" group="Joystick"
    //% weight=77
    //% inlineInputMode=inline
-   export function onJoystickMoved(side: JoystickSide, handler: () => void): void {
+   export function onJoystickTilted(side: JoystickSide, direction: JoystickDirection, handler: () => void): void {
        startEventMonitor();
-       control.onEvent(JOYSTICK_MOVED_EVENT_SOURCE, side + 1, handler);
+       control.onEvent(JOYSTICK_TILTED_EVENT_SOURCE, getJoystickDirectionEventValue(side, direction), handler);
+    }
+
+    /**
+    * Run code repeatedly while the selected joystick is tilted toward a direction.
+    * @param side joystick to watch
+    * @param direction direction to watch
+    */
+   //% blockId=whileJoystickTilted block="when %side joystick is tilted %direction" group="Joystick"
+   //% weight=76
+   //% inlineInputMode=inline
+   export function whileJoystickTilted(side: JoystickSide, direction: JoystickDirection, handler: () => void): void {
+       startEventMonitor();
+       control.onEvent(JOYSTICK_TILTED_CONTINUOUS_EVENT_SOURCE, getJoystickDirectionEventValue(side, direction), handler);
+    }
+
+    /**
+    * Check whether the selected joystick is tilted toward a direction.
+    * @param side joystick to read
+    * @param direction direction to check
+    */
+   //% blockId=joystickTilted block="%side joystick is tilted %direction" group="Joystick"
+   //% weight=75
+   //% inlineInputMode=inline
+   export function joystickTilted(side: JoystickSide, direction: JoystickDirection): boolean {
+       return isJoystickTilted(side, direction);
     }
 
 
@@ -675,7 +737,7 @@ namespace joystick {
     * @param axis axis to read
     */
    //% blockId=joystickPosition block="%side joystick %axis position" group="Joystick"
-   //% weight=76
+   //% weight=74
    //% inlineInputMode=inline
    export function joystickPosition(side: JoystickSide, axis: JoystickAxis): number {
        return readJoystickPosition(side, axis);
@@ -686,7 +748,7 @@ namespace joystick {
     * @param limit minimum or maximum value to return
     */
    //% blockId=joystickPositionLimit block="joystick %limit position" group="Joystick"
-   //% weight=72
+   //% weight=73
    //% inlineInputMode=inline
    export function joystickPositionLimit(limit: JoystickPositionLimit): number {
        return getJoystickPositionLimit(limit);
@@ -696,7 +758,7 @@ namespace joystick {
     * Recalibrate the joystick center positions using the current joystick readings.
     */
    //% blockId=calibrateJoystickCenter block="calibrate joystick center" group="Joystick"
-   //% weight=71
+   //% weight=72
    export function calibrateJoystickCenter(): void {
        joystickCentersInitialized = false;
        initializeJoystickCenters();
