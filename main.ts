@@ -1,4 +1,8 @@
 enum GamepadButton {
+    //% block="A"
+    BUTTON_A = 5,
+    //% block="B"
+    BUTTON_B = 6,
     //% block="L"
     BUTTON_L = 2,
     //% block="R" 
@@ -43,6 +47,47 @@ enum JoystickPositionLimit {
     MIN = 0,
     //% block="max"
     MAX = 1,
+}
+
+/**
+ * Haptic vibration patterns for short feedback cues.
+ */
+enum HapticPattern {
+    /**
+     * Hold vibration on steadily until the duration ends.
+     */
+    //% block="steady"
+    STEADY = 0,
+    /**
+     * Play a soft repeating pulse for gentle start, stop, or warning feedback.
+     */
+    //% block="gentle pulse"
+    GENTLE_PULSE = 1,
+    /**
+     * Play a clear repeating on/off pulse.
+     */
+    //% block="pulse"
+    PULSE = 2,
+    /**
+     * Play two quick pulses followed by a pause, useful for confirmations.
+     */
+    //% block="double pulse"
+    DOUBLE_PULSE = 3,
+    /**
+     * Increase vibration strength smoothly over the duration.
+     */
+    //% block="ramp up"
+    RAMP_UP = 4,
+    /**
+     * Decrease vibration strength smoothly over the duration.
+     */
+    //% block="ramp down"
+    RAMP_DOWN = 5,
+    /**
+     * Play a repeating rise-and-fall pattern that can follow demo movement.
+     */
+    //% block="wave"
+    WAVE = 6,
 }
 
 
@@ -149,10 +194,17 @@ namespace joystick {
     const LEFT_BUTTON_ID = 2;
     const RIGHT_JOYSTICK_BUTTON_ID = 3;
     const LEFT_JOYSTICK_BUTTON_ID = 4;
+    const A_BUTTON_ID = 5;
+    const B_BUTTON_ID = 6;
     const JOYSTICK_DEADZONE = 8;
     const JOYSTICK_POSITION_MAX = 100;
     const GAMEPAD_BUTTON_EVENT_SOURCE = 3100;
+    const GAMEPAD_BUTTON_COMBO_EVENT_SOURCE = 3102;
     const JOYSTICK_MOVED_EVENT_SOURCE = 3101;
+    const VIBRATION_PIN = AnalogPin.P1;
+    const BUTTON_CLICK_MAX_MS = 400;
+    const BUTTON_DOUBLE_CLICK_MAX_MS = 500;
+    const BUTTON_HELD_MS = 700;
 
     let joystickCentersInitialized = false;
     let leftJoystickXCenter = 0;
@@ -160,8 +212,14 @@ namespace joystick {
     let rightJoystickXCenter = 0;
     let rightJoystickYCenter = 0;
     let eventMonitorStarted = false;
-    let buttonPressedStates = [false, false, false, false, false];
+    let previousButtonStates = [-1, -1, -1, -1, -1, -1, -1];
+    let faceButtonPressedAt = [0, 0, 0, 0, 0, 0, 0];
+    let faceButtonLastClickAt = [0, 0, 0, 0, 0, 0, 0];
+    let faceButtonHeldRaised = [false, false, false, false, false, false, false];
+    let comboPressedStates = [false, false, false, false, false, false, false];
     let joystickMovedStates = [false, false];
+    let defaultVibrationStrength = 255;
+    let vibrationRunId = 0;
 
     function getButtonStatus(button: number) {
         switch(button) {
@@ -173,9 +231,29 @@ namespace joystick {
                 return i2cread(GAMEPAD_I2C_ADDRESS, RIGHT_JOYSTICK_BUTTON_REG);
 			case LEFT_JOYSTICK_BUTTON_ID:
 				return i2cread(GAMEPAD_I2C_ADDRESS, LEFT_JOYSTICK_BUTTON_REG);
+            case A_BUTTON_ID:
+                return input.buttonIsPressed(Button.A) ? ButtonState.PRESSED : ButtonState.RELEASED;
+            case B_BUTTON_ID:
+                return input.buttonIsPressed(Button.B) ? ButtonState.PRESSED : ButtonState.RELEASED;
             default:
                 return 0xff;
         }
+    }
+
+    function isFaceButton(button: number): boolean {
+        return button == A_BUTTON_ID || button == B_BUTTON_ID;
+    }
+
+    function isButtonState(button: number, status: ButtonState): boolean {
+        let currentStatus = getButtonStatus(button);
+        if (isFaceButton(button) && status == ButtonState.NOT_PRESSED) {
+            return currentStatus == ButtonState.RELEASED;
+        }
+        return currentStatus == status;
+    }
+
+    function isButtonPressed(button: number): boolean {
+        return getButtonStatus(button) == ButtonState.PRESSED;
     }
 
     function initializeJoystickCenters() {
@@ -249,8 +327,154 @@ namespace joystick {
         return JOYSTICK_POSITION_MAX;
     }
 
+    function getButtonEventValue(button: number, status: number): number {
+        return button * 10 + status;
+    }
+
+    function raiseButtonEvent(button: number, status: ButtonState): void {
+        control.raiseEvent(GAMEPAD_BUTTON_EVENT_SOURCE, getButtonEventValue(button, status));
+    }
+
+    function getComboEventValue(button1: number, button2: number): number {
+        let first = Math.min(button1, button2);
+        let second = Math.max(button1, button2);
+        return first * 10 + second;
+    }
+
     function isJoystickMoved(side: JoystickSide): boolean {
         return readJoystickPosition(side, JoystickAxis.X) != 0 || readJoystickPosition(side, JoystickAxis.Y) != 0;
+    }
+
+    function clamp(value: number, min: number, max: number): number {
+        return Math.max(min, Math.min(max, value));
+    }
+
+    function writeVibration(strength: number): void {
+        pins.analogWritePin(VIBRATION_PIN, pins.map(
+            clamp(strength, 0, 255),
+            0,
+            255,
+            0,
+            1023
+        ))
+    }
+
+    function pauseHaptic(runId: number, milliseconds: number): boolean {
+        let remaining = milliseconds;
+        while (remaining > 0) {
+            if (runId != vibrationRunId) {
+                return false;
+            }
+
+            let step = Math.min(20, remaining);
+            basic.pause(step);
+            remaining = remaining - step;
+        }
+
+        return runId == vibrationRunId;
+    }
+
+    function playHapticStep(runId: number, strength: number, milliseconds: number): boolean {
+        if (runId != vibrationRunId) {
+            return false;
+        }
+
+        writeVibration(strength);
+        return pauseHaptic(runId, milliseconds);
+    }
+
+    function playPulsePattern(runId: number, durationMs: number, strength: number, onMs: number, offMs: number): void {
+        let remaining = durationMs;
+        while (remaining > 0 && runId == vibrationRunId) {
+            let onDuration = Math.min(onMs, remaining);
+            if (!playHapticStep(runId, strength, onDuration)) {
+                return;
+            }
+            remaining = remaining - onDuration;
+
+            let offDuration = Math.min(offMs, remaining);
+            if (offDuration > 0 && !playHapticStep(runId, 0, offDuration)) {
+                return;
+            }
+            remaining = remaining - offDuration;
+        }
+    }
+
+    function playDoublePulsePattern(runId: number, durationMs: number): void {
+        let remaining = durationMs;
+        while (remaining > 0 && runId == vibrationRunId) {
+            let firstPulse = Math.min(120, remaining);
+            if (!playHapticStep(runId, defaultVibrationStrength, firstPulse)) {
+                return;
+            }
+            remaining = remaining - firstPulse;
+
+            let shortGap = Math.min(80, remaining);
+            if (shortGap > 0 && !playHapticStep(runId, 0, shortGap)) {
+                return;
+            }
+            remaining = remaining - shortGap;
+
+            let secondPulse = Math.min(120, remaining);
+            if (secondPulse > 0 && !playHapticStep(runId, defaultVibrationStrength, secondPulse)) {
+                return;
+            }
+            remaining = remaining - secondPulse;
+
+            let longGap = Math.min(450, remaining);
+            if (longGap > 0 && !playHapticStep(runId, 0, longGap)) {
+                return;
+            }
+            remaining = remaining - longGap;
+        }
+    }
+
+    function playRampPattern(runId: number, durationMs: number, rampUp: boolean): void {
+        let steps = Math.max(1, Math.min(20, Math.floor(durationMs / 20)));
+        let stepDuration = durationMs / steps;
+
+        for (let step = 0; step < steps; step++) {
+            let progress = rampUp ? step + 1 : steps - step;
+            let strength = Math.round(defaultVibrationStrength * progress / steps);
+            if (!playHapticStep(runId, strength, stepDuration)) {
+                return;
+            }
+        }
+    }
+
+    function playWavePattern(runId: number, durationMs: number): void {
+        let remaining = durationMs;
+        let step = 0;
+        while (remaining > 0 && runId == vibrationRunId) {
+            let phase = step % 4;
+            let strength = defaultVibrationStrength;
+            if (phase == 0) {
+                strength = Math.round(defaultVibrationStrength * 0.35);
+            } else if (phase == 1) {
+                strength = Math.round(defaultVibrationStrength * 0.7);
+            } else if (phase == 3) {
+                strength = Math.round(defaultVibrationStrength * 0.5);
+            }
+
+            let duration = Math.min(180, remaining);
+            if (!playHapticStep(runId, strength, duration)) {
+                return;
+            }
+            remaining = remaining - duration;
+
+            let gap = Math.min(60, remaining);
+            if (gap > 0 && !playHapticStep(runId, 0, gap)) {
+                return;
+            }
+            remaining = remaining - gap;
+            step = step + 1;
+        }
+    }
+
+    function finishHaptic(runId: number): void {
+        if (runId == vibrationRunId) {
+            writeVibration(0);
+        }
     }
 
     function startEventMonitor(): void {
@@ -261,12 +485,49 @@ namespace joystick {
         eventMonitorStarted = true;
         control.inBackground(function () {
             while (true) {
-                for (let button = 1; button <= 4; button++) {
-                    let pressed = getButtonStatus(button) == ButtonState.PRESSED;
-                    if (pressed && !buttonPressedStates[button]) {
-                        control.raiseEvent(GAMEPAD_BUTTON_EVENT_SOURCE, button);
+                let now = input.runningTime();
+                for (let button = 1; button <= 6; button++) {
+                    let status = getButtonStatus(button);
+                    if (previousButtonStates[button] == -1) {
+                        previousButtonStates[button] = status;
+                        if (isFaceButton(button) && status == ButtonState.PRESSED) {
+                            faceButtonPressedAt[button] = now;
+                        }
+                    } else if (status != previousButtonStates[button]) {
+                        raiseButtonEvent(button, status);
+                        if (isFaceButton(button) && status == ButtonState.RELEASED) {
+                            raiseButtonEvent(button, ButtonState.NOT_PRESSED);
+
+                            let pressDuration = now - faceButtonPressedAt[button];
+                            if (pressDuration <= BUTTON_CLICK_MAX_MS) {
+                                if (faceButtonLastClickAt[button] > 0 && now - faceButtonLastClickAt[button] <= BUTTON_DOUBLE_CLICK_MAX_MS) {
+                                    raiseButtonEvent(button, ButtonState.DOUBLE_CLICK);
+                                    faceButtonLastClickAt[button] = 0;
+                                } else {
+                                    raiseButtonEvent(button, ButtonState.SINGLE_CLICK);
+                                    faceButtonLastClickAt[button] = now;
+                                }
+                            }
+                        } else if (isFaceButton(button) && status == ButtonState.PRESSED) {
+                            faceButtonPressedAt[button] = now;
+                            faceButtonHeldRaised[button] = false;
+                        }
+                        previousButtonStates[button] = status;
+                    } else if (isFaceButton(button) && status == ButtonState.PRESSED && !faceButtonHeldRaised[button] && now - faceButtonPressedAt[button] >= BUTTON_HELD_MS) {
+                        raiseButtonEvent(button, ButtonState.HELD);
+                        faceButtonHeldRaised[button] = true;
                     }
-                    buttonPressedStates[button] = pressed;
+                }
+
+                for (let button1 = 1; button1 <= 6; button1++) {
+                    for (let button2 = button1 + 1; button2 <= 6; button2++) {
+                        let comboValue = getComboEventValue(button1, button2);
+                        let comboPressed = isButtonPressed(button1) && isButtonPressed(button2);
+                        if (comboPressed && !comboPressedStates[comboValue]) {
+                            control.raiseEvent(GAMEPAD_BUTTON_COMBO_EVENT_SOURCE, comboValue);
+                        }
+                        comboPressedStates[comboValue] = comboPressed;
+                    }
                 }
 
                 for (let side = 0; side <= 1; side++) {
@@ -283,31 +544,61 @@ namespace joystick {
     }
 
    /**
-    * Dual-joystick gamepad
+    * Run code when a gamepad button changes to the selected input state.
+    * @param button button to watch
+    * @param status input state that triggers the event
     */
-   //% blockId=onGamepadButtonPressed block="on %button button pressed" group="Buttons"
+   //% blockId=onGamepadButtonInput block="on %button button %status" group="Buttons"
    //% weight=78
    //% inlineInputMode=inline
-   export function onButtonPressed(button: GamepadButton, handler: () => void): void {
+   export function onButtonInput(button: GamepadButton, status: ButtonState, handler: () => void): void {
        startEventMonitor();
-       control.onEvent(GAMEPAD_BUTTON_EVENT_SOURCE, button, handler);
+       control.onEvent(GAMEPAD_BUTTON_EVENT_SOURCE, getButtonEventValue(button, status), handler);
     }
 
    /**
-    * Dual-joystick gamepad
+    * Run code when both selected gamepad buttons are pressed at the same time.
+    * @param button1 first button to watch
+    * @param button2 second button to watch
+    */
+   //% blockId=onGamepadButtonComboPressed block="on %button1 + %button2 buttons pressed" group="Buttons"
+   //% weight=77
+   //% inlineInputMode=inline
+   export function onButtonComboPressed(button1: GamepadButton, button2: GamepadButton, handler: () => void): void {
+       startEventMonitor();
+       control.onEvent(GAMEPAD_BUTTON_COMBO_EVENT_SOURCE, getComboEventValue(button1, button2), handler);
+    }
+
+   /**
+    * Check whether a gamepad button is currently in the selected state.
+    * @param button button to read
+    * @param status input state to compare against
     */
    //% blockId=buttonState block="%button button is %status" group="Buttons"
    //% weight=74
    //% inlineInputMode=inline
    export function buttonState(button: GamepadButton, status: ButtonState): boolean{
-       if(getButtonStatus(button) == status){
+       if(isButtonState(button, status)){
            return true;
        }
        return false;
     }
 
+   /**
+    * Check whether both selected gamepad buttons are currently pressed.
+    * @param button1 first button to read
+    * @param button2 second button to read
+    */
+   //% blockId=buttonComboState block="%button1 + %button2 buttons are pressed" group="Buttons"
+   //% weight=73
+   //% inlineInputMode=inline
+   export function buttonComboState(button1: GamepadButton, button2: GamepadButton): boolean {
+       return isButtonPressed(button1) && isButtonPressed(button2);
+    }
+
     /**
-    * Dual-joystick gamepad
+    * Run code when the selected joystick moves away from center.
+    * @param side joystick to watch
     */
    //% blockId=onJoystickMoved block="on %side joystick moved" group="Joystick"
    //% weight=77
@@ -319,25 +610,69 @@ namespace joystick {
 
 
     /**
-    * Dual-joystick gamepad
+    * Set the default vibration strength used by haptic patterns.
+    * @param strength vibration strength from 0 to 255
     */
    //% blockId=setVibration block="set vibration to %strength" group="Vibration"
    //% strength.min=0 strength.max=255
    //% weight=75
    //% inlineInputMode=inline
     export function setVibration(strength: number): void {
-        let vibrationPin = AnalogPin.P1;
-        pins.analogWritePin(vibrationPin, pins.map(
-			strength,
-			0,
-			255,
-			0,
-			1023
-			))
+        defaultVibrationStrength = clamp(strength, 0, 255);
+    }
+
+   /**
+    * Play the selected haptic pattern for a fixed number of seconds.
+    * @param pattern haptic pattern to play
+    * @param seconds duration from 0 to 60 seconds
+    */
+   //% blockId=playHaptic block="play haptic %pattern for %seconds seconds" group="Vibration"
+   //% seconds.min=0 seconds.max=60
+   //% weight=74
+   //% inlineInputMode=inline
+    export function playHaptic(pattern: HapticPattern, seconds: number): void {
+        let durationMs = Math.round(clamp(seconds, 0, 60) * 1000);
+        vibrationRunId = vibrationRunId + 1;
+        let runId = vibrationRunId;
+
+        if (durationMs <= 0) {
+            finishHaptic(runId);
+            return;
+        }
+
+        if (pattern == HapticPattern.STEADY) {
+            playHapticStep(runId, defaultVibrationStrength, durationMs);
+        } else if (pattern == HapticPattern.GENTLE_PULSE) {
+            playPulsePattern(runId, durationMs, Math.round(defaultVibrationStrength * 0.45), 180, 320);
+        } else if (pattern == HapticPattern.PULSE) {
+            playPulsePattern(runId, durationMs, defaultVibrationStrength, 150, 150);
+        } else if (pattern == HapticPattern.DOUBLE_PULSE) {
+            playDoublePulsePattern(runId, durationMs);
+        } else if (pattern == HapticPattern.RAMP_UP) {
+            playRampPattern(runId, durationMs, true);
+        } else if (pattern == HapticPattern.RAMP_DOWN) {
+            playRampPattern(runId, durationMs, false);
+        } else {
+            playWavePattern(runId, durationMs);
+        }
+
+        finishHaptic(runId);
     }
 
     /**
-    * Dual-joystick gamepad
+    * Stop any active vibration or haptic pattern immediately.
+    */
+   //% blockId=stopAllVibration block="stop all vibration" group="Vibration"
+   //% weight=73
+    export function stopAllVibration(): void {
+        vibrationRunId = vibrationRunId + 1;
+        writeVibration(0);
+    }
+
+    /**
+    * Read a joystick axis position from -100 to 100, with 0 at center.
+    * @param side joystick to read
+    * @param axis axis to read
     */
    //% blockId=joystickPosition block="%side joystick %axis position" group="Joystick"
    //% weight=76
@@ -347,7 +682,8 @@ namespace joystick {
    }
 
    /**
-    * Dual-joystick gamepad
+    * Get the minimum or maximum joystick position value.
+    * @param limit minimum or maximum value to return
     */
    //% blockId=joystickPositionLimit block="joystick %limit position" group="Joystick"
    //% weight=72
@@ -357,7 +693,7 @@ namespace joystick {
    }
 
     /**
-    * Dual-joystick gamepad
+    * Recalibrate the joystick center positions using the current joystick readings.
     */
    //% blockId=calibrateJoystickCenter block="calibrate joystick center" group="Joystick"
    //% weight=71
