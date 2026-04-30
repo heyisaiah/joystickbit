@@ -3,9 +3,9 @@ enum GamepadButton {
     BUTTON_L = 2,
     //% block="R" 
     BUTTON_R = 1,
-    //% block="left joystick button"
+    //% block="left joystick"
     JOYSTICK_L = 4,
-    //% block="right joystick button" 
+    //% block="right joystick"
     JOYSTICK_R = 3,
 }
 
@@ -38,8 +38,16 @@ enum JoystickSide {
     RIGHT = 1,
 }
 
+enum JoystickPositionLimit {
+    //% block="min"
+    MIN = 0,
+    //% block="max"
+    MAX = 1,
+}
 
-//% color="#FFA500" weight=10 icon="\uf2c9" block="Joystick:bit"
+
+//% color="#FFA500" weight=10 icon="\uf2c9" block="Gamepad"
+//% groups=['Buttons', 'Joystick', 'Vibration']
 namespace joystick {
     
     let i2cAddr: number
@@ -142,12 +150,18 @@ namespace joystick {
     const RIGHT_JOYSTICK_BUTTON_ID = 3;
     const LEFT_JOYSTICK_BUTTON_ID = 4;
     const JOYSTICK_DEADZONE = 8;
+    const JOYSTICK_POSITION_MAX = 100;
+    const GAMEPAD_BUTTON_EVENT_SOURCE = 3100;
+    const JOYSTICK_MOVED_EVENT_SOURCE = 3101;
 
     let joystickCentersInitialized = false;
     let leftJoystickXCenter = 0;
     let leftJoystickYCenter = 0;
     let rightJoystickXCenter = 0;
     let rightJoystickYCenter = 0;
+    let eventMonitorStarted = false;
+    let buttonPressedStates = [false, false, false, false, false];
+    let joystickMovedStates = [false, false];
 
     function getButtonStatus(button: number) {
         switch(button) {
@@ -211,15 +225,79 @@ namespace joystick {
         if (Math.abs(delta) <= JOYSTICK_DEADZONE) {
             return 0;
         }
-        return delta;
+        return scaleJoystickPosition(delta, getJoystickCenter(side, axis));
+    }
+
+    function scaleJoystickPosition(delta: number, center: number): number {
+        if (delta < 0) {
+            if (center <= 0) {
+                return 0 - JOYSTICK_POSITION_MAX;
+            }
+            return Math.max(0 - JOYSTICK_POSITION_MAX, Math.round(delta * JOYSTICK_POSITION_MAX / center));
+        }
+
+        if (center >= 255) {
+            return JOYSTICK_POSITION_MAX;
+        }
+        return Math.min(JOYSTICK_POSITION_MAX, Math.round(delta * JOYSTICK_POSITION_MAX / (255 - center)));
+    }
+
+    function getJoystickPositionLimit(limit: JoystickPositionLimit): number {
+        if (limit == JoystickPositionLimit.MIN) {
+            return 0 - JOYSTICK_POSITION_MAX;
+        }
+        return JOYSTICK_POSITION_MAX;
+    }
+
+    function isJoystickMoved(side: JoystickSide): boolean {
+        return readJoystickPosition(side, JoystickAxis.X) != 0 || readJoystickPosition(side, JoystickAxis.Y) != 0;
+    }
+
+    function startEventMonitor(): void {
+        if (eventMonitorStarted) {
+            return;
+        }
+
+        eventMonitorStarted = true;
+        control.inBackground(function () {
+            while (true) {
+                for (let button = 1; button <= 4; button++) {
+                    let pressed = getButtonStatus(button) == ButtonState.PRESSED;
+                    if (pressed && !buttonPressedStates[button]) {
+                        control.raiseEvent(GAMEPAD_BUTTON_EVENT_SOURCE, button);
+                    }
+                    buttonPressedStates[button] = pressed;
+                }
+
+                for (let side = 0; side <= 1; side++) {
+                    let moved = isJoystickMoved(side);
+                    if (moved && !joystickMovedStates[side]) {
+                        control.raiseEvent(JOYSTICK_MOVED_EVENT_SOURCE, side + 1);
+                    }
+                    joystickMovedStates[side] = moved;
+                }
+
+                basic.pause(20);
+            }
+        });
     }
 
    /**
     * Dual-joystick gamepad
     */
-   //% blockId=buttonState block="button %button is %status" group="Dual-Joystick Gamepad"
+   //% blockId=onGamepadButtonPressed block="on %button button pressed" group="Buttons"
+   //% weight=78
+   //% inlineInputMode=inline
+   export function onButtonPressed(button: GamepadButton, handler: () => void): void {
+       startEventMonitor();
+       control.onEvent(GAMEPAD_BUTTON_EVENT_SOURCE, button, handler);
+    }
+
+   /**
+    * Dual-joystick gamepad
+    */
+   //% blockId=buttonState block="%button button is %status" group="Buttons"
    //% weight=74
-   //% subcategory="Dual-Joystick Gamepad"
    //% inlineInputMode=inline
    export function buttonState(button: GamepadButton, status: ButtonState): boolean{
        if(getButtonStatus(button) == status){
@@ -231,33 +309,21 @@ namespace joystick {
     /**
     * Dual-joystick gamepad
     */
-   //% blockId=lButtonState block="L button is %status" group="Dual-Joystick Gamepad"
-   //% weight=73
-   //% subcategory="Dual-Joystick Gamepad"
+   //% blockId=onJoystickMoved block="on %side joystick moved" group="Joystick"
+   //% weight=77
    //% inlineInputMode=inline
-   export function lButtonState(status: ButtonState): boolean {
-       return getButtonStatus(LEFT_BUTTON_ID) == status;
-    }
-
-    /**
-    * Dual-joystick gamepad
-    */
-   //% blockId=rButtonState block="R button is %status" group="Dual-Joystick Gamepad"
-   //% weight=72
-   //% subcategory="Dual-Joystick Gamepad"
-   //% inlineInputMode=inline
-   export function rButtonState(status: ButtonState): boolean {
-       return getButtonStatus(RIGHT_BUTTON_ID) == status;
+   export function onJoystickMoved(side: JoystickSide, handler: () => void): void {
+       startEventMonitor();
+       control.onEvent(JOYSTICK_MOVED_EVENT_SOURCE, side + 1, handler);
     }
 
 
     /**
     * Dual-joystick gamepad
     */
-   //% blockId=setVibration block="set vibration to %strength"  group="Dual-Joystick Gamepad"
+   //% blockId=setVibration block="set vibration to %strength" group="Vibration"
    //% strength.min=0 strength.max=255
    //% weight=75
-   //% subcategory="Dual-Joystick Gamepad"
    //% inlineInputMode=inline
     export function setVibration(strength: number): void {
         let vibrationPin = AnalogPin.P1;
@@ -273,20 +339,28 @@ namespace joystick {
     /**
     * Dual-joystick gamepad
     */
-   //% blockId=joystickPosition block="joystick %side %axis position" group="Dual-Joystick Gamepad"
+   //% blockId=joystickPosition block="%side joystick %axis position" group="Joystick"
    //% weight=76
-   //% subcategory="Dual-Joystick Gamepad"
    //% inlineInputMode=inline
    export function joystickPosition(side: JoystickSide, axis: JoystickAxis): number {
        return readJoystickPosition(side, axis);
    }
 
+   /**
+    * Dual-joystick gamepad
+    */
+   //% blockId=joystickPositionLimit block="joystick %limit position" group="Joystick"
+   //% weight=72
+   //% inlineInputMode=inline
+   export function joystickPositionLimit(limit: JoystickPositionLimit): number {
+       return getJoystickPositionLimit(limit);
+   }
+
     /**
     * Dual-joystick gamepad
     */
-   //% blockId=calibrateJoystickCenter block="calibrate joystick center" group="Dual-Joystick Gamepad"
+   //% blockId=calibrateJoystickCenter block="calibrate joystick center" group="Joystick"
    //% weight=71
-   //% subcategory="Dual-Joystick Gamepad"
    export function calibrateJoystickCenter(): void {
        joystickCentersInitialized = false;
        initializeJoystickCenters();
